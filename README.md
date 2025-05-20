@@ -3,10 +3,6 @@
 ### Overview
 This Python script performs an ABC analysis on article movement data, visualizing monthly trends and categorizing articles into A, B, and C classes based on their movement frequency over the last 6 months. It generates two plots (time series and cumulative distribution) and saves the results to a CSV file.
 
-### Requirements
-- Python 3.6+
-- Libraries: `pandas`, `matplotlib`, `numpy`
-- Install dependencies: `pip install pandas matplotlib numpy`
 
 ### Usage
 1. Place your input data file (`input_data.csv`) in the `data/` directory.
@@ -34,4 +30,8 @@ id;number;name;Month_1;Month_2;...;Month_13 <br/>
 - `monthly_timeseries.png`: Time series plot of monthly movements (top-5 articles highlighted).
 - `abc_analysis.png`: Cumulative distribution plot with A/B/C categories.
 - `abc_analysis_results.csv`: Results table with article details and ABC categories.
+- Output example:
+
+<img src="https://github.com/user-attachments/assets/555c8f21-4a2e-47e8-ab65-43f544c129ea" alt="Result Packing Visualization" width="400">
+
 
