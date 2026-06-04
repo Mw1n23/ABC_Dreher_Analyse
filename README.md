@@ -74,6 +74,8 @@ Results are written to `output/`:
 - Required columns: `id`, `number`, `name`
 - Month columns: `Month_1`, `Month_2`, ... `Month_n`
 - The trailing `--last-months` month columns are used for the ABC ranking.
+- Month values must be non-negative counts. Missing or non-numeric values are treated as zero for ABC totals.
+- A dominant top article remains category `A` even if it crosses the 80% cumulative threshold by itself.
 
 ## Quality Check
 ```bash

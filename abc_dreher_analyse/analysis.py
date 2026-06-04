@@ -11,6 +11,9 @@ from typing import Any
 LOGGER = logging.getLogger(__name__)
 BASE_COLUMNS = ("id", "number", "name")
 MONTH_PATTERN = re.compile(r"^Month_(\d+)$")
+ABC_CATEGORIES = ("A", "B", "C")
+A_THRESHOLD = 80.0
+B_THRESHOLD = 95.0
 
 
 class DataLoadError(RuntimeError):
@@ -85,12 +88,13 @@ def read_input_data(input_file: Path, delimiter: str) -> tuple[Any, str]:
                 encoding=encoding,
                 sep=delimiter,
                 quoting=csv.QUOTE_MINIMAL,
-                on_bad_lines="skip",
             )
             return dataframe, encoding
-        except (UnicodeDecodeError, pd.errors.ParserError) as exc:
+        except UnicodeDecodeError as exc:
             last_error = exc
             continue
+        except pd.errors.ParserError as exc:
+            raise DataLoadError(f"Could not parse '{input_file}': {exc}") from exc
         except pd.errors.EmptyDataError as exc:
             raise DataLoadError(
                 f"The file at '{input_file}' is empty. Please check the file."
@@ -102,11 +106,22 @@ def read_input_data(input_file: Path, delimiter: str) -> tuple[Any, str]:
 
 
 def detect_month_columns(columns: list[str], last_months: int) -> list[str]:
+    if last_months <= 0:
+        raise DataValidationError("last_months must be greater than zero.")
+
     month_matches: list[tuple[int, str]] = []
+    seen_month_numbers: dict[int, str] = {}
     for column in columns:
         match = MONTH_PATTERN.match(column)
         if match:
-            month_matches.append((int(match.group(1)), column))
+            month_number = int(match.group(1))
+            if month_number in seen_month_numbers:
+                raise DataValidationError(
+                    "Duplicate month index found in columns "
+                    f"'{seen_month_numbers[month_number]}' and '{column}'."
+                )
+            seen_month_numbers[month_number] = column
+            month_matches.append((month_number, column))
 
     if not month_matches:
         raise DataValidationError(
@@ -123,6 +138,9 @@ def detect_month_columns(columns: list[str], last_months: int) -> list[str]:
 
 
 def validate_dataframe(dataframe: Any, last_months: int) -> list[str]:
+    if dataframe.empty:
+        raise DataValidationError("Input file contains no data rows.")
+
     missing_columns = [column for column in BASE_COLUMNS if column not in dataframe.columns]
     if missing_columns:
         raise DataValidationError(
@@ -147,56 +165,64 @@ def compute_monthly_stats(dataframe: Any, month_columns: list[str]) -> Any:
 
 
 def assign_abc_category(cumulative_percentage: float) -> str:
-    if cumulative_percentage <= 80:
+    if cumulative_percentage <= A_THRESHOLD:
         return "A"
-    if cumulative_percentage <= 95:
+    if cumulative_percentage <= B_THRESHOLD:
         return "B"
     return "C"
 
 
-def analyze_dataframe(dataframe: Any, month_columns: list[str], last_months: int) -> AnalysisArtifacts:
+def coerce_monthly_movements(dataframe: Any, month_columns: list[str]) -> Any:
     pd = load_analysis_dependencies()
     processed_df = dataframe.copy()
-    processed_df[month_columns] = processed_df[month_columns].apply(pd.to_numeric, errors="coerce")
+    monthly_numeric = processed_df[month_columns].apply(pd.to_numeric, errors="coerce")
 
-    if processed_df[month_columns].isna().any().any():
+    missing_count = int(monthly_numeric.isna().sum().sum())
+    if missing_count:
         LOGGER.warning(
-            "NaN values found in monthly columns. Missing values will be ignored in the analysis."
+            "%s missing or non-numeric monthly values were found. "
+            "They will be treated as zero for ABC totals and ignored in monthly statistics.",
+            missing_count,
         )
 
-    monthly_stats = compute_monthly_stats(processed_df, month_columns)
-    last_n_columns = month_columns[-last_months:]
-    last_n_label = f"last_{last_months}_months"
+    negative_mask = monthly_numeric < 0
+    if bool(negative_mask.any().any()):
+        negative_columns = sorted(
+            column for column in month_columns if bool(negative_mask[column].any())
+        )
+        raise DataValidationError(
+            "Monthly movement columns must not contain negative values. "
+            f"Columns with negative values: {negative_columns}"
+        )
 
-    processed_df[last_n_label] = processed_df[last_n_columns].fillna(0).sum(axis=1)
-    sorted_df = processed_df.sort_values(by=last_n_label, ascending=False).copy()
+    processed_df[month_columns] = monthly_numeric
+    return processed_df
 
-    top_5_articles = sorted_df["name"].head(5).tolist()
-    top_10_articles = sorted_df["name"].head(10).tolist()
 
-    total_movements = float(sorted_df[last_n_label].sum())
+def add_abc_columns(sorted_df: Any, movement_column: str) -> tuple[Any, float]:
+    total_movements = float(sorted_df[movement_column].sum())
     if total_movements > 0:
-        sorted_df["cumulative_movements"] = sorted_df[last_n_label].cumsum()
+        sorted_df["cumulative_movements"] = sorted_df[movement_column].cumsum()
         sorted_df["cumulative_percentage"] = (
             sorted_df["cumulative_movements"] / total_movements * 100
         )
         sorted_df["abc_category"] = sorted_df["cumulative_percentage"].apply(assign_abc_category)
+        sorted_df.iloc[0, sorted_df.columns.get_loc("abc_category")] = "A"
     else:
         sorted_df["cumulative_movements"] = 0.0
         sorted_df["cumulative_percentage"] = 0.0
         sorted_df["abc_category"] = "C"
+    return sorted_df, total_movements
 
-    result_df = sorted_df[
-        ["id", "number", "name", last_n_label, "abc_category"]
-    ].copy()
 
+def build_summary_dataframe(result_df: Any, movement_column: str, total_movements: float) -> Any:
     summary_df = (
         result_df.groupby("abc_category", dropna=False)
         .agg(
             Article_Count=("id", "count"),
-            Total_Movements=(last_n_label, "sum"),
+            Total_Movements=(movement_column, "sum"),
         )
-        .sort_index()
+        .reindex(ABC_CATEGORIES, fill_value=0)
     )
 
     article_count = len(result_df)
@@ -209,6 +235,33 @@ def analyze_dataframe(dataframe: Any, month_columns: list[str], last_months: int
         summary_df["Percent_Movements"] = summary_df["Total_Movements"] / total_movements * 100
     else:
         summary_df["Percent_Movements"] = 0.0
+
+    return summary_df
+
+
+def analyze_dataframe(dataframe: Any, month_columns: list[str], last_months: int) -> AnalysisArtifacts:
+    processed_df = coerce_monthly_movements(dataframe, month_columns)
+    monthly_stats = compute_monthly_stats(processed_df, month_columns)
+    last_n_columns = month_columns[-last_months:]
+    last_n_label = f"last_{last_months}_months"
+
+    processed_df[last_n_label] = processed_df[last_n_columns].fillna(0).sum(axis=1)
+    sorted_df = processed_df.sort_values(
+        by=[last_n_label, "number", "name"],
+        ascending=[False, True, True],
+        kind="mergesort",
+    ).copy()
+
+    top_5_articles = sorted_df["name"].head(5).tolist()
+    top_10_articles = sorted_df["name"].head(10).tolist()
+
+    sorted_df, total_movements = add_abc_columns(sorted_df, last_n_label)
+
+    result_df = sorted_df[
+        ["id", "number", "name", last_n_label, "abc_category"]
+    ].copy()
+
+    summary_df = build_summary_dataframe(result_df, last_n_label, total_movements)
 
     return AnalysisArtifacts(
         month_columns=month_columns,
@@ -239,7 +292,12 @@ def build_summary_text(summary_df: Any) -> str:
     return "\n".join(lines)
 
 
-def create_time_series_plot(artifacts: AnalysisArtifacts, output_dir: Path, show_plots: bool) -> None:
+def create_time_series_plot(
+    artifacts: AnalysisArtifacts,
+    output_dir: Path,
+    save_plot: bool,
+    show_plots: bool,
+) -> None:
     plt, np = load_plot_dependencies(show_plots=show_plots)
     plt.figure(figsize=(12, 6))
 
@@ -274,13 +332,19 @@ def create_time_series_plot(artifacts: AnalysisArtifacts, output_dir: Path, show
         plt.legend(handles, labels, title="Top-5 Articles", loc="upper right")
 
     plt.tight_layout()
-    plt.savefig(output_dir / "monthly_timeseries.png", bbox_inches="tight")
+    if save_plot:
+        plt.savefig(output_dir / "monthly_timeseries.png", bbox_inches="tight")
     if show_plots:
         plt.show()
     plt.close()
 
 
-def create_abc_plot(artifacts: AnalysisArtifacts, output_dir: Path, show_plots: bool) -> None:
+def create_abc_plot(
+    artifacts: AnalysisArtifacts,
+    output_dir: Path,
+    save_plot: bool,
+    show_plots: bool,
+) -> None:
     plt, _ = load_plot_dependencies(show_plots=show_plots)
     plt.figure(figsize=(12, 8))
 
@@ -354,7 +418,8 @@ def create_abc_plot(artifacts: AnalysisArtifacts, output_dir: Path, show_plots: 
     )
 
     plt.tight_layout()
-    plt.savefig(output_dir / "abc_analysis.png", bbox_inches="tight")
+    if save_plot:
+        plt.savefig(output_dir / "abc_analysis.png", bbox_inches="tight")
     if show_plots:
         plt.show()
     plt.close()
@@ -382,9 +447,19 @@ def run_analysis(config: AnalysisConfig) -> AnalysisArtifacts:
     LOGGER.info("ABC Analysis Results:\n%s", artifacts.result_df.to_string(index=False))
     LOGGER.info("Summary:\n%s", artifacts.summary_df.to_string())
 
-    if config.save_plots:
-        create_time_series_plot(artifacts, output_dir=config.output_dir, show_plots=config.show_plots)
-        create_abc_plot(artifacts, output_dir=config.output_dir, show_plots=config.show_plots)
+    if config.save_plots or config.show_plots:
+        create_time_series_plot(
+            artifacts,
+            output_dir=config.output_dir,
+            save_plot=config.save_plots,
+            show_plots=config.show_plots,
+        )
+        create_abc_plot(
+            artifacts,
+            output_dir=config.output_dir,
+            save_plot=config.save_plots,
+            show_plots=config.show_plots,
+        )
 
     results_file = save_results_csv(artifacts.result_df, output_dir=config.output_dir)
     LOGGER.info("Results saved to '%s'.", results_file)

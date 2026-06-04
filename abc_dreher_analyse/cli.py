@@ -7,7 +7,6 @@ from pathlib import Path
 from .analysis import AnalysisConfig, run_analysis
 
 
-logging.basicConfig(level=logging.INFO, format="%(levelname)s: %(message)s")
 LOGGER = logging.getLogger(__name__)
 
 
@@ -68,8 +67,15 @@ def parse_arguments(argv: list[str] | None = None) -> AnalysisConfig:
     )
 
 
+def configure_logging() -> None:
+    if logging.getLogger().handlers:
+        return
+    logging.basicConfig(level=logging.INFO, format="%(levelname)s: %(message)s")
+
+
 def main(argv: list[str] | None = None) -> int:
     try:
+        configure_logging()
         config = parse_arguments(argv)
         run_analysis(config)
     except Exception as exc:

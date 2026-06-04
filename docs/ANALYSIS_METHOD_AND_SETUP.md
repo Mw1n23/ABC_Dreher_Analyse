@@ -26,7 +26,8 @@ Month columns are discovered dynamically using the pattern `Month_<n>`.
 
 ### 3. Convert month columns to numeric values
 - Non-numeric values are coerced to `NaN`.
-- Missing values are tolerated and ignored in the aggregation.
+- Missing values are treated as zero for ABC totals and ignored in monthly statistics.
+- Negative monthly movement values are rejected because the ABC ranking expects movement counts, not signed corrections.
 
 ### 4. Build the ABC ranking
 - The analysis sums the trailing `N` month columns, where `N` is controlled by `--last-months`.
@@ -37,7 +38,9 @@ Month columns are discovered dynamically using the pattern `Month_<n>`.
 ### 5. Assign categories
 - `A`: up to 80% cumulative movements
 - `B`: next up to 95%
-- `C`: remaining share
+- `C`: remaining articles
+
+This keeps a single dominant top article in category `A` even when that article alone crosses the 80% threshold.
 
 ### 6. Export outputs
 By default the repository writes:
@@ -87,3 +90,4 @@ python abc_analysis.py --help
 - The project expects a column-oriented monthly input layout.
 - The current classification thresholds are fixed to the common `80/95/100` convention.
 - Plot output requires the plotting extra.
+- Negative movement corrections must be cleaned before importing the CSV.

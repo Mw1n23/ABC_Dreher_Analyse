@@ -118,6 +118,85 @@ class ABCDreherAnalyseTests(unittest.TestCase):
             self.assertEqual(list(artifacts.result_df["abc_category"]), ["A", "B", "C"])
             self.assertTrue((output_dir / "abc_analysis_results.csv").exists())
 
+    @unittest.skipUnless(pd is not None, "pandas not installed")
+    def test_dominant_article_stays_in_category_a(self) -> None:
+        dataframe = pd.DataFrame(
+            [
+                ["1", "1001", "Dominant", 100, 0, 0, 0, 0, 0],
+                ["2", "1002", "Small A", 1, 0, 0, 0, 0, 0],
+                ["3", "1003", "Small B", 1, 0, 0, 0, 0, 0],
+            ],
+            columns=[
+                "id",
+                "number",
+                "name",
+                "Month_1",
+                "Month_2",
+                "Month_3",
+                "Month_4",
+                "Month_5",
+                "Month_6",
+            ],
+        )
+
+        month_columns = analysis_module.validate_dataframe(dataframe, last_months=6)
+        artifacts = analysis_module.analyze_dataframe(dataframe, month_columns, last_months=6)
+
+        self.assertEqual(artifacts.result_df.iloc[0]["name"], "Dominant")
+        self.assertEqual(artifacts.result_df.iloc[0]["abc_category"], "A")
+        self.assertIn("B", artifacts.summary_df.index)
+        self.assertEqual(int(artifacts.summary_df.loc["B", "Article_Count"]), 0)
+
+    @unittest.skipUnless(pd is not None, "pandas not installed")
+    def test_negative_monthly_movements_are_rejected(self) -> None:
+        dataframe = pd.DataFrame(
+            [["1", "1001", "Article A", 10, -1, 0, 0, 0, 0]],
+            columns=[
+                "id",
+                "number",
+                "name",
+                "Month_1",
+                "Month_2",
+                "Month_3",
+                "Month_4",
+                "Month_5",
+                "Month_6",
+            ],
+        )
+
+        month_columns = analysis_module.validate_dataframe(dataframe, last_months=6)
+        with self.assertRaises(analysis_module.DataValidationError):
+            analysis_module.analyze_dataframe(dataframe, month_columns, last_months=6)
+
+    @unittest.skipUnless(pd is not None, "pandas not installed")
+    def test_duplicate_month_numbers_are_rejected(self) -> None:
+        dataframe = pd.DataFrame(
+            [["1", "1001", "Article A", 10, 11]],
+            columns=["id", "number", "name", "Month_1", "Month_01"],
+        )
+
+        with self.assertRaises(analysis_module.DataValidationError):
+            analysis_module.validate_dataframe(dataframe, last_months=1)
+
+    @unittest.skipUnless(pd is not None, "pandas not installed")
+    def test_empty_input_is_rejected(self) -> None:
+        dataframe = pd.DataFrame(columns=["id", "number", "name", "Month_1"])
+
+        with self.assertRaises(analysis_module.DataValidationError):
+            analysis_module.validate_dataframe(dataframe, last_months=1)
+
+    @unittest.skipUnless(pd is not None, "pandas not installed")
+    def test_malformed_csv_is_not_silently_skipped(self) -> None:
+        with tempfile.TemporaryDirectory() as tmpdir:
+            input_file = Path(tmpdir) / "broken.csv"
+            input_file.write_text(
+                'id;number;name;Month_1\n1;1001;"Broken;10\n',
+                encoding="utf-8",
+            )
+
+            with self.assertRaises(analysis_module.DataLoadError):
+                analysis_module.read_input_data(input_file, delimiter=";")
+
 
 if __name__ == "__main__":
     unittest.main()
